@@ -15,3 +15,23 @@ export interface ClientExercise {
   orderIndex: number;
   sets: ClientSet[];
 }
+
+export interface SetRecord {
+  setOrder: number;
+  targetReps: number;
+  targetWeight: number;
+  actualReps: number;
+  actualWeight: number;
+  rpe?: number;
+  status: "IN_PROGRESS" | "COMPLETED" | "SKIPPED";
+}
+
+export interface ExerciseHistoryResponse {
+  sessionDate: string;
+  sessionId: number;
+  planTitle: string;
+  programName: string | null;
+  calculated1Rm: number;
+  totalVolume: number;
+  sets: SetRecord[];
+}

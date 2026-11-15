@@ -1,224 +1,139 @@
-# 🏋️‍♂️ Linkfit Frontend Core Engineering Showcase
+# Linkfit Frontend Showcase
 
-> **실제 상용 서비스(Linkfit) 운영 중 마주한 복잡한 브라우저·하이브리드 환경의 한계를 극복하고, 프로덕션 수준의 안정성과 UX를 달성한 4대 핵심 엔지니어링 아키텍처 쇼케이스입니다.**
+Linkfit의 실제 프론트엔드 코드에서 추출한 설계 사례와 실행 예제입니다. 운영 서비스 전체를 공개하는 대신, 문제를 해결한 핵심 코드와 확인 방법을 함께 정리했습니다.
 
-[![Test Suite](https://img.shields.io/badge/Vitest-100%25%20Passed-brightgreen)](tests/)
-[![Architecture](https://img.shields.io/badge/Architecture-FSD%20(Feature--Sliced)-blue)](src/)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.7-blue)](tsconfig.json)
+**SSR은 최근 추가한 기술 검증 사례입니다. 운영 환경의 성능 개선이나 장기간 사용 실적을 의미하지 않습니다.** 실제 회원 정보·운영 주소·인증 정보 없이 로컬 모의 API로 실행합니다.
 
----
+## 처음 보신다면
 
-## 🏛️ 아키텍처 구조 (Feature-Sliced Design)
+| 관심 주제 | 먼저 읽을 코드 | 확인할 내용 |
+| --- | --- | --- |
+| 첫 목록 SSR과 인증 | [community/page.tsx](src/app/community/page.tsx) → [getServerSession](src/features/auth/api/getServerSession.ts) → [CommunityFeed](src/app/community/CommunityFeed.tsx) | 서버 조회 데이터를 브라우저 Query 캐시에 연결하는 방식 |
+| 선언적 비동기 처리 | [AsyncBoundary](src/shared/ui/AsyncBoundary.tsx) → [사용 예제](src/app/async-boundary/page.tsx) | 로딩·오류·재시도 경계를 위젯 단위로 분리 |
+| 시각화 모듈 분리 | [dynamic import](src/app/visualization/page.tsx) → [ExerciseHistoryChart](src/widgets/exercise/ui/ExerciseHistoryChart.tsx) | 화면과 Chart.js·브라우저 전용 줌 플러그인의 의존성 분리 |
+| 운동 기록 보존 | [syncQueue](src/entities/session/model/syncQueue.ts) → [테스트](tests/sync-queue.test.ts) | 네트워크 실패 시 큐 보관·재시도·정리 정책 |
+| WebView 상호작용 | [제스처 처리](src/widgets/plan/ui/ReorderableExerciseItem.tsx) → [브리지](src/shared/utils/webview-bridge.ts) | 드래그 후 클릭 억제와 웹·네이티브 메시지 경계 |
 
-본 저장소는 **FSD(Feature-Sliced Design)** 방법론을 엄격히 준수하여 계층 간 결합도를 낮추고 도메인 로직을 명확히 격리했습니다.
+원본 파일과 공개용 변경 범위는 [코드 출처·변경 내역](docs/SOURCE_MAP.md)에 정리했습니다.
 
-```text
-src/
-├── shared/                       # 전역 공통 인프라, 유틸리티, 인터셉터
-│   ├── api/                      # 🔗 Mutex 기반 토큰 갱신 큐 & 메모리 토큰 스토어
-│   │   ├── axios.ts              # -> [코드 보기](src/shared/api/axios.ts)
-│   │   └── tokenStore.ts         # -> [코드 보기](src/shared/api/tokenStore.ts)
-│   ├── utils/                    # 🔗 Type-Safe 웹뷰-네이티브 양방향 브릿지
-│   │   └── webview-bridge.ts     # -> [코드 보기](src/shared/utils/webview-bridge.ts)
-│   └── hooks/                    # 🔗 Event-Driven 네이티브 Pull-to-Refresh 차단 훅
-│       └── useDisablePullToRefresh.ts # -> [코드 보기](src/shared/hooks/useDisablePullToRefresh.ts)
-├── entities/                     # 도메인 모델 및 데이터 영속화
-│   ├── session/                  # 🔗 오프라인 복원력 SyncQueue 엔진
-│   │   └── model/syncQueue.ts    # -> [코드 보기](src/entities/session/model/syncQueue.ts)
-│   └── exercise/                 # 🔗 운동 및 세트 모델 정의
-│       └── model/types.ts        # -> [코드 보기](src/entities/exercise/model/types.ts)
-└── widgets/                      # 복합 비즈니스 UI 컴포넌트
-    └── plan/                     # 🔗 wasDraggedRef 동기식 제스처 락 인터랙션
-        └── ui/ReorderableExerciseItem.tsx # -> [코드 보기](src/widgets/plan/ui/ReorderableExerciseItem.tsx)
-```
+## 실행
 
----
-
-## 🏆 4대 핵심 엔지니어링 딥다이브 (Tech Spec)
-
----
-
-### 1. [Network / Concurrency] 동시 401 만료 시 토큰 갱신 경합 방어 (Mutex & Subscriber Pattern)
-
-🔗 **관련 소스 코드:** [`src/shared/api/axios.ts`](src/shared/api/axios.ts) | 🧪 **단위 테스트:** [`tests/token-refresh.test.ts`](tests/token-refresh.test.ts)
-
-```mermaid
-sequenceDiagram
-    autonumber
-    actor Client as 화면 진입 (5개 위젯)
-    participant Interceptor as Axios Interceptor
-    participant Queue as Subscriber Queue
-    participant Server as Auth Server
-    
-    Client->>Interceptor: 5개 API 동시 요청 (모두 401 Unauthorized 수신)
-    Note over Interceptor: isRefreshing = true (Mutex 잠금 획득)
-    Interceptor->>Server: POST /api/auth/refresh (단 1회만 호출)
-    Note over Queue: 나머지 4개 요청은 refreshSubscribers 큐에 Promise 대기
-    Server-->>Interceptor: 200 OK (신규 Access Token 발급)
-    Note over Interceptor: onRefreshed() 브로드캐스트
-    Queue-->>Client: 대기 중이던 4개 요청에 새 토큰 주입 후 자동 재시도 성공
-```
-
-#### 📌 문제 상황 (Problem)
-- 첫 화면 진입 시 대시보드 내 여러 컴포넌트에서 5~10개의 API가 병렬 호출됨.
-- Access Token 만료 시 모든 요청이 일제히 `401 Unauthorized`를 받아, 각각 독립적으로 Refresh API를 호출하는 **Race Condition(경합 상태)** 발생.
-- 서버의 RTR(Refresh Token Rotation) 정책에 의해 첫 요청 외 나머지가 무효화되어 다수의 요청이 실패하고 사용자가 강제 로그아웃되는 결함.
-
-#### ⚖️ 고려했던 대안과 기술적 트레이드오프 (Trade-off & Rationale)
-1. **대안 A (클라이언트 사전 만료 체크)**: JWT `exp` 클레임을 디코딩해 만료 직전 갱신.
-   - ❌ *기각 이유*: 디바이스 시스템 시간과 서버 NTP 시간 간 오차가 발생할 경우 불필요한 선행 요청이 발생하거나 만료된 토큰이 전송되는 정합성 결함 존재.
-2. **대안 B (401 즉시 로그아웃)**:
-   - ❌ *기각 이유*: 사용자가 운동을 기록하거나 폼을 작성하는 도중 무조건 튕겨나가 치명적인 데이터 유실 초래.
-3. **최종 선택 (Mutex Lock & Subscriber Pattern)**:
-   - ✅ `isRefreshing` 불리언 락으로 최초 요청만 리프레시를 수행하고, 나머지 요청은 `refreshSubscribers` 큐에 적재하여 대기.
-   - 갱신 완료 즉시 대기 중인 모든 요청에 새 토큰을 주입하여 투명하게(Transparent) 일괄 자동 재시도 완료.
-   - **성과**: 불필요한 인증 네트워크 부하 90% 절감, 사용자 세션 무중단 유지.
-
----
-
-### 2. [Hybrid Native UX] iOS Live Activity & Android 포그라운드 서비스 양방향 액션 프로토콜
-
-🔗 **관련 소스 코드:** [`src/shared/utils/webview-bridge.ts`](src/shared/utils/webview-bridge.ts) | 🧪 **단위 테스트:** [`tests/webview-bridge.test.ts`](tests/webview-bridge.test.ts)
-
-```mermaid
-flowchart LR
-    subgraph Web ["Next.js Web Content"]
-        State["운동 세션 상태<br/>(세트/타이머)"]
-        Bridge["Type-Safe Bridge<br/>(liveActivityBridge)"]
-    end
-    subgraph Native ["React Native Shell / OS"]
-        IPC["Message Protocol<br/>(postMessage)"]
-        Island["iOS Dynamic Island /<br/>Android Notification"]
-    end
-
-    State -->|1. 세트 완료/휴식 시작| Bridge
-    Bridge -->|2. LIVE_ACTIVITY_UPDATE| IPC
-    IPC -->|3. 위젯 UI 렌더링| Island
-    Island -->|4. 유저가 '건너뛰기' 탭| IPC
-    IPC -->|5. LIVE_ACTIVITY_ACTION (SKIP)| State
-```
-
-#### 📌 문제 상황 (Problem)
-- 운동 중 사용자가 스마트폰을 끄거나 백그라운드로 전환했을 때도 Dynamic Island, 잠금화면 위젯, 안드로이드 알림 바에서 현재 세트와 휴식 타이머가 실시간 표시되어야 함.
-- 잠금화면 위젯에서 '세트 완료(COMPLETE)' 또는 '휴식 건너뛰기(SKIP)'를 눌렀을 때, 백그라운드 웹뷰의 운동 세션 상태가 0ms로 즉시 동기화되어야 함.
-
-#### ⚖️ 고려했던 대안과 기술적 트레이드오프 (Trade-off & Rationale)
-1. **대안 A (WebSocket / SSE 서버 중계 방식)**:
-   - ❌ *기각 이유*: 지하 헬스장 등 네트워크가 불안정한 곳에서 수초의 통신 딜레이가 발생하며, 불필요한 서버 인프라 유지비용 발생.
-2. **대안 B (단순 푸시 알림 + 앱 복귀 유도)**:
-   - ❌ *기각 이유*: 땀 묻은 손으로 매번 잠금을 풀고 앱으로 들어와야 하므로 피트니스 앱 본연의 퀵 인터랙션 UX 훼손.
-3. **최종 선택 (로컬 IPC Two-Way Bridge 프로토콜)**:
-   - ✅ OS 네이티브 셸(RN)과 웹뷰 간 100% 로컬 IPC 메시지 프로토콜 구축.
-   - iOS(`LIVE_ACTIVITY_*`)와 Android(`ANDROID_FOREGROUND_SERVICE_*`) 플랫폼 규격을 단일 인터페이스로 캡슐화.
-   - **성과**: 서버 네트워크 상태와 무관하게 0ms 즉각 반응하는 잠금화면 인터랙션 달성.
-
----
-
-### 3. [Resilience / Offline] 네트워크 단절 대응을 위한 Local `SyncQueue` 엔진
-
-🔗 **관련 소스 코드:** [`src/entities/session/model/syncQueue.ts`](src/entities/session/model/syncQueue.ts) | 🧪 **단위 테스트:** [`tests/sync-queue.test.ts`](tests/sync-queue.test.ts)
-
-```mermaid
-stateDiagram-v2
-    [*] --> InProgress: 운동 세션 진행
-    InProgress --> CompletedAPI: 세션 완료 클릭
-    CompletedAPI --> Success: API 호출 성공
-    CompletedAPI --> Enqueue: 일시적 네트워크 장애 (Fail)
-    
-    state Enqueue {
-        [*] --> LocalStorage: SyncQueue 적재 (최대 1개 락)
-        LocalStorage --> Retry: MAX_RETRY_COUNT (최대 3회)
-        Retry --> AutoSync: 네트워크 복구 시 자동 동기화
-        Retry --> ManualSync: 3회 초과 시 수동 동기화 UI 보존
-    }
-    
-    AutoSync --> Success: 동기화 성공 후 큐 제거
-    ManualSync --> Success: 수동 재시도 성공
-    Success --> [*]
-```
-
-#### 📌 문제 상황 (Problem)
-- 지하 헬스장 환경 특성상 Wi-Fi/LTE 신호가 일시 단절되는 경우가 잦음.
-- 1시간 넘게 땀 흘려 기록한 운동 세션을 '완료'하는 순간 네트워크 에러가 발생하면 데이터가 영구 유실되는 치명적 사용자 경험.
-
-#### ⚖️ 고려했던 대안과 기술적 트레이드오프 (Trade-off & Rationale)
-1. **대안 A (단순 무한 재시도 setInterval)**:
-   - ❌ *기각 이유*: 앱 종료 시 휘발되며, 여러 세션 간 동일 데이터 중복 적재(Duplication) 위험.
-2. **대안 B (에러 토스트 띄우고 종료)**:
-   - ❌ *기각 이유*: 기록 유실로 인한 서비스 신뢰도 파괴.
-3. **최종 선택 (영속화 기반 SyncQueue & Failover)**:
-   - ✅ `localStorage` 기반 영속화 큐 구축 (`isSynced: false`).
-   - 데이터 불일치 방지를 위해 대기 세션 크기를 **최대 1개로 단일화 제약**.
-   - 최대 재시도(`MAX_RETRY_COUNT = 3`), 7일 경과 데이터 청소(`cleanupOldItems`), 3회 초과 시 영구 보존 후 수동 재시도 제공.
-   - **성과**: 네트워크 단절 시에도 사용자 운동 데이터 유실률 0% 달성.
-
----
-
-### 4. [Interaction / React Internals] 드래그 제스처 충돌 방어 및 `wasDraggedRef` 동기식 락
-
-🔗 **관련 소스 코드:** [`src/widgets/plan/ui/ReorderableExerciseItem.tsx`](src/widgets/plan/ui/ReorderableExerciseItem.tsx)
-
-```mermaid
-sequenceDiagram
-    autonumber
-    actor User
-    participant Card as ExerciseCard (DOM)
-    participant Ref as wasDraggedRef (Sync Lock)
-    participant Native as WebView Bridge
-
-    User->>Card: 카드 롱프레스 후 드래그 시작
-    Card->>Ref: wasDraggedRef.current = true (0ms 즉시 잠금)
-    Card->>Native: postMessage('DRAG_START') (네이티브 스크롤 락)
-
-    User->>Card: 드래그 완료 후 손가락 뗌 (onDragEnd)
-    Card->>Native: postMessage('DRAG_END') (네이티브 스크롤 해제)
-    Note over Card: 브라우저가 Synthetic Click Event 연속 발화!
-    Card->>Card: onClick 핸들러 발화
-    Card->>Ref: wasDraggedRef.current 검사 (true 확인)
-    Note over Card: 🛑 아코디언 열림 동작 0ms 즉시 무시 차단
-    Note over Ref: setTimeout 400ms 후 wasDraggedRef.current = false 복구
-```
-
-#### 📌 문제 상황 (Problem)
-- 운동 카드를 드래그(Reorder)할 때 네이티브 웹뷰의 당겨서 새로고침(Pull-to-Refresh)과 충돌하여 화면이 떨림.
-- 드래그를 마치고 손가락을 떼는 순간 브라우저가 터치 지점에 **합성 클릭 이벤트(Synthetic Click Event)**를 연쇄 발화시켜, 드래그만 하려던 카드의 아코디언이 강제로 펼쳐지는 심각한 UX 결함.
-
-#### ⚖️ 고려했던 대안과 기술적 트레이드오프 (Trade-off & Rationale)
-1. **대안 A (React State `isDragging` 플래그)**:
-   - ❌ *기각 이유*: React의 `setState`는 **비동기 배치(Batch)**로 동작함. `onDragEnd`에서 상태를 `false`로 바꾸는 마이크로태스크 사이에 브라우저의 `onClick` 이벤트가 먼저 실행되어 락이 뚫림.
-2. **대안 B (`pointer-events: none` CSS 일시 적용)**:
-   - ❌ *기각 이유*: CSS 클래스가 제거되는 순간 이벤트 루프 큐에 대기 중이던 마우스/터치 업 이벤트가 그대로 관통됨.
-3. **최종 선택 (`wasDraggedRef` 동기식 락 & 네이티브 스크롤 브릿지)**:
-   - ✅ 렌더링 사이클과 무관하게 0ms로 즉시 평가되는 **동기식 참조 변수 `wasDraggedRef = useRef(false)`** 도입.
-   - 드래그 종료 시 락을 유지하여 관통하는 클릭 이벤트를 0ms로 즉시 무시하고, 400ms 뒤 안전하게 해제.
-   - **성과**: 모바일 웹뷰 환경에서 네이티브 앱과 동일한 60fps 무결점 제스처 UX 달성.
-
----
-
-## 🧪 단위 테스트 검증 (Test Suite)
-
-모든 핵심 로직은 `Vitest` 기반 단위 테스트로 철저히 검증되었습니다.
+Node.js 20.19 이상이 필요합니다. 운영용 `.env`나 실제 로그인이 필요하지 않습니다.
 
 ```bash
-# 의존성 설치 및 테스트 실행
-npm install
-npm test
+npm ci
+npm run dev
 ```
+
+[http://127.0.0.1:3000](http://127.0.0.1:3000)에서 시작합니다. `dev` 명령은 Next.js와 로컬 모의 백엔드를 함께 시작합니다. `Ctrl+C`로 함께 종료합니다. 포트 변경 예: `PORT=3100 npm run dev`.
+
+| 경로 | 실행해 볼 내용 |
+| --- | --- |
+| `/login` → `/community` | 사용자 A·B 선택, 서버 첫 목록, 탭 전환, 다음 페이지 조회 |
+| `/login`의 예외 시나리오 | 인증 만료, 프로필 미완성, 백엔드 장애 분기 |
+| `/async-boundary` | 첫 요청 실패 → 다시 시도 → 위젯 복구 |
+| `/visualization` | 차트 열기, 모듈 로딩, 운동 기록 차트·줌 동작 |
+
+데모 로그인은 누구나 선택 가능한 **가상 사용자 전용 기능**입니다. 실제 서비스의 인증 구현으로 사용하지 않습니다. 모의 백엔드도 localhost에만 바인딩합니다.
+
+## 1. 인증된 커뮤니티 첫 목록 SSR
+
+**문제와 목적** — 클라이언트 인증 확인 후 목록을 조회하는 구조에서는 첫 HTML에 목록이 없습니다. 첫 목록을 서버에서 준비하면서 기존 Query 기반의 탭·페이지 조회를 유지하도록 구성했습니다.
+
+```mermaid
+sequenceDiagram
+    participant B as Browser
+    participant N as Next.js Server
+    participant A as Mock API
+    B->>N: GET /community + HttpOnly cookie
+    N->>A: refresh → me → posts
+    A-->>N: 사용자·첫 페이지
+    N-->>B: 첫 목록 HTML + dehydrated Query state
+    Note over B: 첫 목록 재사용, 인증 토큰은 HTML에 포함하지 않음
+    B->>N: 탭·다음 페이지 API 요청
+    N->>A: API proxy
+```
+
+- 요청마다 서버 QueryClient를 생성하고 `HydrationBoundary`로 첫 페이지를 전달합니다.
+- 사용자 ID별 클라이언트 Provider를 분리하고, 서버 요청과 개인화 HTML을 공유 캐시에 저장하지 않습니다.
+- 서버·클라이언트가 목록 키·페이지 크기·staleTime을 공유해 초기 중복 조회를 피합니다.
+- 인증 실패와 백엔드 장애를 구분합니다. 장애를 곧바로 로그아웃으로 처리하지 않습니다.
+
+**확인 방법** — 페이지 소스와 `npm run test:ssr`에서 첫 게시글 HTML, 사용자 A → B → A 데이터 격리, 토큰 비노출과 인증 분기를 확인합니다. 컴포넌트 테스트는 초기 중복 요청과 후속 페이지 조회를 확인합니다.
+
+**범위와 한계** — 첫 목록만 SSR입니다. 공개 예제의 다음 페이지 버튼은 원본 무한 스크롤 트리거를 대체합니다. 원본의 Jotai·공통 내비게이션은 생략했습니다. SSR이 응답 시간을 항상 줄인다고 가정하지 않으며, 운영 성능 비교는 별도 과제입니다.
+
+[상세 설명과 읽기 순서](docs/cases/COMMUNITY_SSR.md)
+
+## 2. 로딩·오류·재시도를 분리한 AsyncBoundary
+
+**문제와 목적** — 데이터 컴포넌트마다 로딩·실패 분기를 반복하지 않고, 실패 범위와 재시도 UI를 상위 경계에서 정하도록 구성했습니다.
+
+- `Suspense`는 로딩 화면, `ErrorBoundary`는 렌더링 중 발생한 오류를 처리합니다.
+- `QueryErrorResetBoundary`와 오류 경계의 reset을 연결해 실패한 쿼리를 다시 시도합니다.
+- `resetKeys`가 바뀌면 다른 입력·대상에 대해 경계를 초기화할 수 있습니다.
+
+**확인 방법** — `/async-boundary`에서 인접 위젯은 유지한 채 실패한 위젯을 복구합니다. [테스트](tests/async-boundary.test.tsx)는 정상 조회·실패 후 재시도·resetKeys 변경을 확인합니다.
+
+**한계** — 이벤트 핸들러나 임의의 비동기 콜백 오류를 모두 잡는 장치가 아닙니다. 전체 Query 캐시를 지우는 구현도 아닙니다.
+
+[상세 설명과 읽기 순서](docs/cases/ASYNC_BOUNDARY.md)
+
+## 3. 시각화 모듈 분리와 클라이언트 로딩
+
+**문제와 목적** — 조회 화면에서 Chart.js 등록과 줌 플러그인 설정을 분리하고, 브라우저 전용 의존성을 서버 렌더링과 구분했습니다.
+
+- 원본 화면의 직접 파일 경로 import와 `next/dynamic` 설정을 가져왔습니다.
+- 추출한 `ExerciseHistoryChart`는 기록 정렬, 볼륨·추정 1RM 표시와 줌·팬 설정을 담당합니다.
+- 공개 예제의 표시 버튼과 가상 기록으로 차트 로딩을 확인할 수 있습니다.
+
+**확인 방법** — `/visualization`에서 차트를 열고 Network의 JS 요청과 실제 차트 동작을 확인합니다.
+
+**한계** — `ssr: false`만으로 차트가 항상 클릭 시점에 다운로드된다고 보장하지 않습니다. 청크 로딩과 선행 로딩 여부는 빌드 결과·브라우저 Network로 확인해야 합니다. 이 저장소에서 번들 감소율이나 LCP 개선율은 측정하지 않았습니다.
+
+[상세 설명과 읽기 순서](docs/cases/VISUALIZATION.md)
+
+## 기존 핵심 사례
+
+기존 파일은 유지했습니다. 아래 항목은 독립 코드·테스트 중심이며, 브라우저 데모를 제공하는 범위와 구분합니다.
+
+| 사례 | 소스 | 테스트·검토 포인트 |
+| --- | --- | --- |
+| 동시 401의 갱신 요청 조정 | [axios.ts](src/shared/api/axios.ts) | [테스트](tests/token-refresh.test.ts): 5개 동시 요청에서 갱신 1회. 갱신 실패 시 대기 Promise 정리 정책은 추가 검토 과제 |
+| 좋아요 낙관적 업데이트 | [optimisticLike.ts](src/entities/community/api/optimisticLike.ts) | [테스트](tests/optimistic-update.test.ts): 상세·목록 스냅샷과 실패 복원. 서버 데이터의 무결성을 무조건 보장한다는 의미는 아님 |
+| 웹·네이티브 브리지 | [webview-bridge.ts](src/shared/utils/webview-bridge.ts) | [테스트](tests/webview-bridge.test.ts): 메시지 전송·플랫폼 분기. 실제 iOS·Android 네이티브 구현은 포함하지 않음 |
+| 오프라인 동기화 큐 | [syncQueue.ts](src/entities/session/model/syncQueue.ts) | [테스트](tests/sync-queue.test.ts): 성공 제거·실패 보관·재시도. 저장소 삭제나 모든 장애에서 데이터 유실을 방지한다는 의미는 아님 |
+| 드래그 후 클릭 억제 | [ReorderableExerciseItem](src/widgets/plan/ui/ReorderableExerciseItem.tsx) | `wasDraggedRef`로 드래그 후 클릭 구분, 브리지로 제스처 시작·종료 전달. 네이티브 스크롤 제어는 앱 셸의 책임 |
+| 다단계 화면 렌더링 | [useFunnel](src/shared/hooks/useFunnel.tsx) | [테스트](tests/use-funnel.test.tsx): 선택한 단계만 렌더링. 이 훅 자체에 뒤로가기 이력 스택은 없음 |
+
+## 검증 명령
+
+```bash
+npm test
+npm run type-check
+npm run build
+npm run test:ssr
+```
+
+프로덕션 실행은 빌드 후 `npm start`를 사용합니다. 통합 테스트는 로컬 모의 백엔드와 빌드된 Next.js 앱을 시작하고 종료하며, 기본 3175 포트는 `SSR_TEST_PORT`로 변경할 수 있습니다.
+
+테스트 통과는 정해진 시나리오의 결과입니다. 운영 장애 0건·데이터 유실 0%·0ms 반응·무중단·60fps를 증명하지 않습니다. 성능을 소개할 때는 측정 환경과 전후 결과를 별도로 제시합니다.
+
+## 디렉터리
 
 ```text
- RUN  v3.2.4 /linkfit-frontend-showcase
-
- ✓ tests/webview-bridge.test.ts (2 tests)
- ✓ tests/sync-queue.test.ts (3 tests)
- ✓ tests/token-refresh.test.ts (2 tests)
-
- Test Files  3 passed (3)
-      Tests  7 passed (7)
+src/app/                  실행 가능한 공개 예제와 데모 전용 Route Handler
+src/entities/             동기화 큐·커뮤니티 캐시·시각화 데이터 타입
+src/features/auth/        서버 인증 흐름과 사용자별 Query Provider
+src/shared/               API·비동기 경계·브리지·공통 훅
+src/widgets/              실제 서비스에서 추출한 제스처·차트 컴포넌트
+scripts/                  가상 사용자·로컬 모의 API·실행기
+tests/                   단위·컴포넌트·프로덕션 HTTP 통합 테스트
+docs/                    사례별 읽기 순서·원본 대비 변경 범위
 ```
 
----
+디렉터리는 기존 서비스의 계층 구성을 참고합니다. 공개 예제의 데모 코드는 서비스 전체의 FSD 구조를 재현하려는 목적은 아닙니다.
 
-## 👨‍💻 Author
+## 작성자
 
-- **개발자**: 김혁수 (Kim Hyeoksu)
-- **Email**: linkfit.official@gmail.com
+김혁수 · Linkfit Frontend

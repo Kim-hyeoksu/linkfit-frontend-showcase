@@ -2,11 +2,15 @@
   "name": "linkfit-frontend-showcase",
   "version": "1.0.0",
   "private": true,
-  "description": "Linkfit Core Engineering Showcase - Architecture, Concurrency, Hybrid Bridge, Offline Resilience & Gesture Locking",
+  "description": "실제 Linkfit 코드에서 추출한 프론트엔드 사례와 로컬 모의 API 기반 실행 예제",
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",
-    "type-check": "tsc --noEmit"
+    "type-check": "tsc --noEmit",
+    "dev": "node scripts/run-demo.mjs dev",
+    "build": "next build --webpack",
+    "start": "node scripts/run-demo.mjs start",
+    "test:ssr": "node tests/community-ssr.smoke.mjs"
   },
   "keywords": [
     "fsd",
@@ -21,12 +25,28 @@
   "license": "MIT",
   "dependencies": {
     "axios": "^1.7.9",
-    "uuid": "^11.1.0"
+    "uuid": "^11.1.0",
+    "@tanstack/react-query": "5.99.0",
+    "react": "19.1.0",
+    "react-dom": "19.1.0",
+    "next": "16.1.6",
+    "chart.js": "4.5.1",
+    "chartjs-plugin-zoom": "2.2.0",
+    "hammerjs": "2.0.8",
+    "react-chartjs-2": "5.3.1"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@types/uuid": "^10.0.0",
     "typescript": "^5.7.3",
-    "vitest": "^3.0.7"
+    "vitest": "3.2.4",
+    "@types/react": "19.1.8",
+    "@types/react-dom": "19.1.6",
+    "@testing-library/react": "16.3.0",
+    "@testing-library/dom": "10.4.1",
+    "jsdom": "27.0.0"
+  },
+  "engines": {
+    "node": ">=20.19.0"
   }
 }
